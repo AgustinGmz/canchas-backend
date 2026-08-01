@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app import models, schemas
 from app.database import get_db
@@ -64,8 +64,11 @@ def create_cancha(cancha: schemas.CanchaCreate, db: Session = Depends(get_db)):
     return new_cancha
 
 @app.get("/canchas/", response_model=List[schemas.Cancha])
-def read_canchas(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return db.query(models.Cancha).offset(skip).limit(limit).all()
+def read_canchas(skip: int = 0, limit: int = 100, tipo: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(models.Cancha)
+    if tipo:
+        query = query.filter(models.Cancha.tipo.ilike(f"%{tipo}%"))
+    return query.offset(skip).limit(limit).all()
 
 @app.get("/canchas/{cancha_id}", response_model=schemas.Cancha)
 def read_cancha(cancha_id: int, db: Session = Depends(get_db)):
@@ -91,5 +94,65 @@ def delete_cancha(cancha_id: int, db: Session = Depends(get_db)):
     if db_cancha is None:
         raise HTTPException(status_code=404, detail="Cancha no encontrada")
     db.delete(db_cancha)
+    db.commit()
+    return {"ok": True}
+
+# CRUD Reservas
+@app.post("/reservas/", response_model=schemas.Reserva)
+def create_reserva(reserva: schemas.ReservaCreate, db: Session = Depends(get_db)):
+    # Regla de negocio: Verificar si la cancha está disponible
+    cancha = db.query(models.Cancha).filter(models.Cancha.id == reserva.cancha_id).first()
+    if not cancha:
+        raise HTTPException(status_code=404, detail="Cancha no encontrada")
+    if not cancha.disponible:
+        raise HTTPException(status_code=400, detail="La cancha no está disponible para reserva")
+    
+    usuario = db.query(models.Usuario).filter(models.Usuario.id == reserva.usuario_id).first()
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    new_reserva = models.Reserva(**reserva.model_dump())
+    db.add(new_reserva)
+    db.commit()
+    db.refresh(new_reserva)
+    return new_reserva
+
+@app.get("/reservas/", response_model=List[schemas.Reserva])
+def read_reservas(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return db.query(models.Reserva).offset(skip).limit(limit).all()
+
+@app.get("/reservas/{reserva_id}", response_model=schemas.Reserva)
+def read_reserva(reserva_id: int, db: Session = Depends(get_db)):
+    db_reserva = db.query(models.Reserva).filter(models.Reserva.id == reserva_id).first()
+    if db_reserva is None:
+        raise HTTPException(status_code=404, detail="Reserva no encontrada")
+    return db_reserva
+
+@app.put("/reservas/{reserva_id}", response_model=schemas.Reserva)
+def update_reserva(reserva_id: int, reserva: schemas.ReservaCreate, db: Session = Depends(get_db)):
+    db_reserva = db.query(models.Reserva).filter(models.Reserva.id == reserva_id).first()
+    if db_reserva is None:
+        raise HTTPException(status_code=404, detail="Reserva no encontrada")
+    
+    # Check new cancha
+    if reserva.cancha_id != db_reserva.cancha_id:
+        cancha = db.query(models.Cancha).filter(models.Cancha.id == reserva.cancha_id).first()
+        if not cancha:
+            raise HTTPException(status_code=404, detail="Nueva cancha no encontrada")
+        if not cancha.disponible:
+            raise HTTPException(status_code=400, detail="La nueva cancha no está disponible")
+            
+    for key, value in reserva.model_dump().items():
+        setattr(db_reserva, key, value)
+    db.commit()
+    db.refresh(db_reserva)
+    return db_reserva
+
+@app.delete("/reservas/{reserva_id}")
+def delete_reserva(reserva_id: int, db: Session = Depends(get_db)):
+    db_reserva = db.query(models.Reserva).filter(models.Reserva.id == reserva_id).first()
+    if db_reserva is None:
+        raise HTTPException(status_code=404, detail="Reserva no encontrada")
+    db.delete(db_reserva)
     db.commit()
     return {"ok": True}
